@@ -1,6 +1,4 @@
 pub mod packet {
-    use processor::byte2bits;
-
     use crate::byte_lib::processor;
 
     pub const HEADER_BYTES: usize = 5;
