@@ -9,7 +9,7 @@ pub mod packet {
         index: i16,
         size: i16,
         frag_flag: u8,
-        data_bytes: Vec<u8>,
+        data_bytes: [u8; DATA_BYTES],
     }
 
     impl HammingPacket {
@@ -36,7 +36,7 @@ pub mod packet {
             }
         }
 
-        pub fn to_raw_bytes(&self) -> Vec<u8> {
+        pub fn to_raw_bytes(&self) -> [u8; DATA_BYTES] {
             let raw_bytes = self.data_bytes.clone();
             raw_bytes
         }
@@ -114,7 +114,7 @@ pub mod packet {
                     bit_buffer.remove(0);
                     let mut real_bytes: Vec<u8> = Vec::new();
                     for i in HEADER_BYTES..HEADER_BYTES + self.size as usize {
-                        let byte = processor::bits2byte(&bit_buffer[8 * i..8 * i + 8].to_vec());
+                        let byte = processor::bits2byte(&bit_buffer[8 * i..8 * i + 8]);
                         real_bytes.push(byte);
                     }
                     Ok(real_bytes)
@@ -124,6 +124,6 @@ pub mod packet {
         }
 
         // TODO
-        //pub fn from(index: i16, size: i16, fragflag: u8, data: &Vec<u8>) -> HammingPacket {}
+        //pub fn from(index: i16, size: i16, fragflag: u8, data: &[u8]) -> HammingPacket {}
     }
 }
