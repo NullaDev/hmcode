@@ -1,4 +1,6 @@
 pub mod packet {
+    use processor::byte2bits;
+
     use crate::byte_lib::processor;
 
     pub const HEADER_BYTES: usize = 5;
@@ -60,15 +62,70 @@ pub mod packet {
         pub fn calc_err_pos(&self) -> usize {
             let mut pos: usize = 0;
             for i in 0..(8 * DATA_BYTES) {
-                let bit = match HammingPacket::get_bit_at_pos(&self, i) {
-                    Ok(val) => val,
-                    Err(_) => panic!("overflow error occurred when calculating packet error pos!"),
-                };
+                let bit = self.get_bit_at_pos(i).expect("overflow error occurred.");
                 if bit {
                     pos ^= i;
                 }
             }
             pos
         }
+
+        pub fn self_correct(&mut self) -> Result<String, String> {
+            let pos = self.calc_err_pos();
+            if pos == 0 {
+                Ok(String::from("no error found."))
+            } else {
+                let mut flag = 0;
+                for i in 0..(8 * DATA_BYTES) {
+                    let bit = self.get_bit_at_pos(i).expect("overflow error occurred.");
+                    if bit {
+                        flag += 1;
+                    }
+                }
+                if flag % 2 == 0 {
+                    Err(String::from(
+                        "two or more error found, cannot self correct.",
+                    ))
+                } else {
+                    let correct_bit = match self.get_bit_at_pos(pos) {
+                        Ok(val) => !val,
+                        Err(info) => panic!(info),
+                    };
+                    let success_message = match self.set_bit_at_pos(pos, correct_bit) {
+                        Ok(_) => format!(
+                            "packet {} found wrong bit at pos {}, corrected",
+                            self.index, pos
+                        ),
+                        Err(info) => panic!(info),
+                    };
+                    Ok(success_message)
+                }
+            }
+        }
+
+        pub fn to_real_bytes(&mut self) -> Result<Vec<u8>, String> {
+            match self.self_correct() {
+                Ok(_) => {
+                    let mut bit_buffer = Vec::new();
+                    for i in 0..8 * DATA_BYTES {
+                        bit_buffer.push(self.get_bit_at_pos(i).expect("Overflowed!"));
+                    }
+                    for i in (0..15).rev() {
+                        bit_buffer.remove(1 << i as usize);
+                    }
+                    bit_buffer.remove(0);
+                    let mut real_bytes: Vec<u8> = Vec::new();
+                    for i in HEADER_BYTES..HEADER_BYTES + self.size as usize {
+                        let byte = processor::bits2byte(&bit_buffer[8 * i..8 * i + 8].to_vec());
+                        real_bytes.push(byte);
+                    }
+                    Ok(real_bytes)
+                }
+                Err(info) => Err(info),
+            }
+        }
+
+        // TODO
+        //pub fn from(index: i16, size: i16, fragflag: u8, data: &Vec<u8>) -> HammingPacket {}
     }
 }
