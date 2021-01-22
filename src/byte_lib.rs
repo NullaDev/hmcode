@@ -18,7 +18,7 @@ pub mod processor {
     pub fn bits2byte(bits: &[bool]) -> u8 {
         let mut byte: u8 = 0;
         for pos in 0..8 {
-            if (*bits)[pos] {
+            if (*bits)[7 - pos] {
                 byte += 1 << pos;
             }
         }

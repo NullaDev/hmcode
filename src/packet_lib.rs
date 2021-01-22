@@ -1,22 +1,27 @@
-pub mod packet {
+pub const HEADER_BYTES: usize = 5;
+pub const DATA_BYTES: usize = 4096;
+pub const DATA_BYTES_VALID: usize = 4091;
+
+pub mod hamming_packet {
+    use processor::{bits2byte, byte2bits};
+
     use crate::byte_lib::processor;
     use std::convert::TryInto;
-
-    pub const HEADER_BYTES: usize = 5;
-    pub const DATA_BYTES: usize = 4096;
-    pub const DATA_BYTES_VALID: usize = 4089;
 
     pub struct HammingPacket {
         index: i16,
         size: i16,
         frag_flag: u8,
-        data_bytes: [u8; DATA_BYTES],
+        data_bytes: [u8; super::DATA_BYTES],
     }
 
     impl HammingPacket {
         pub fn get_bit_at_pos(&self, pos: usize) -> Result<bool, String> {
-            if pos > DATA_BYTES {
-                Err(String::from("The position provided is out of range!"))
+            if pos > super::DATA_BYTES * 8 {
+                Err(format!(
+                    "The position provided is {}, and out of range!",
+                    pos
+                ))
             } else {
                 let index = pos / 8;
                 let target_bits = processor::byte2bits(self.data_bytes[index]);
@@ -25,7 +30,7 @@ pub mod packet {
         }
 
         pub fn set_bit_at_pos(&mut self, pos: usize, bit: bool) -> Result<String, String> {
-            if pos > DATA_BYTES {
+            if pos > super::DATA_BYTES {
                 Err(String::from("The position provided is out of range!"))
             } else {
                 let index: usize = pos / 8;
@@ -37,7 +42,7 @@ pub mod packet {
             }
         }
 
-        pub fn to_raw_bytes(&self) -> [u8; DATA_BYTES] {
+        pub fn to_raw_bytes(&self) -> [u8; super::DATA_BYTES] {
             let raw_bytes = self.data_bytes.clone();
             raw_bytes
         }
@@ -60,7 +65,7 @@ pub mod packet {
 
         pub fn calc_err_pos(&self) -> usize {
             let mut pos: usize = 0;
-            for i in 0..(8 * DATA_BYTES) {
+            for i in 0..(8 * super::DATA_BYTES) {
                 let bit = self.get_bit_at_pos(i).expect("Overflow error occurred.");
                 if bit {
                     pos ^= i;
@@ -72,10 +77,11 @@ pub mod packet {
         pub fn self_correct(&mut self) -> Result<String, String> {
             let pos = self.calc_err_pos();
             if pos == 0 {
+                println!("No error found.");
                 Ok(String::from("No error found."))
             } else {
                 let mut flag = 0;
-                for i in 0..(8 * DATA_BYTES) {
+                for i in 0..(8 * super::DATA_BYTES) {
                     let bit = self.get_bit_at_pos(i).expect("Overflow error occurred.");
                     if bit {
                         flag += 1;
@@ -97,6 +103,7 @@ pub mod packet {
                         ),
                         Err(info) => panic!(info),
                     };
+                    println!("{}", success_message);
                     Ok(success_message)
                 }
             }
@@ -106,16 +113,17 @@ pub mod packet {
             match self.self_correct() {
                 Ok(_) => {
                     let mut bit_buffer = Vec::new();
-                    for i in 0..8 * DATA_BYTES {
-                        bit_buffer.push(self.get_bit_at_pos(i).expect("Overflowed!"));
+                    let data_buffer = self.data_bytes.to_vec();
+                    for i in data_buffer.iter() {
+                        bit_buffer.append(&mut byte2bits(*i).to_vec());
                     }
                     for i in (0..15).rev() {
-                        bit_buffer.remove(1 << i as usize);
+                        bit_buffer.remove(1 << i);
                     }
                     bit_buffer.remove(0);
                     let mut real_bytes: Vec<u8> = Vec::new();
-                    for i in HEADER_BYTES..HEADER_BYTES + self.size as usize {
-                        let byte = processor::bits2byte(&bit_buffer[8 * i..8 * i + 8]);
+                    for i in super::HEADER_BYTES..(super::HEADER_BYTES + (self.size as usize)) {
+                        let byte = processor::bits2byte(&bit_buffer[8 * i..8 * (i + 1)]);
                         real_bytes.push(byte);
                     }
                     Ok(real_bytes)
@@ -124,13 +132,51 @@ pub mod packet {
             }
         }
 
-        // TODO
-        pub fn from(index: i16, fragflag: u8, data: &[u8]) -> Result<HammingPacket, String> {
-            if data.len() > DATA_BYTES_VALID {
-                Err(String::from("Too many bytes in a packet!"))
-            } else if fragflag != 0 || fragflag != 1 {
-                Err(String::from("Invalid fragflag value!"))
+        pub fn from_packed_bytes(data: &Vec<u8>) -> Result<HammingPacket, String> {
+            if data.len() != super::DATA_BYTES {
+                Err(String::from("Invalid data size."))
             } else {
+                let bytes_buffer = data.clone();
+                let mut bits_buffer: Vec<bool> = Vec::new();
+                for byte in bytes_buffer.iter() {
+                    bits_buffer.append(&mut byte2bits(*byte).to_vec());
+                }
+                for i in (0..15).rev() {
+                    bits_buffer.remove(1 << i);
+                }
+                bits_buffer.remove(0);
+
+                let mut header_bytes: Vec<u8> = Vec::new();
+                for i in 0..super::HEADER_BYTES {
+                    header_bytes.push(bits2byte(&bits_buffer[8 * i..8 * (i + 1)]));
+                }
+                let _index = processor::bytes2short(&header_bytes[0..2]);
+                let _size = processor::bytes2short(&header_bytes[2..4]);
+                let _fragflag = header_bytes[4];
+                Ok(HammingPacket {
+                    index: _index,
+                    size: _size,
+                    frag_flag: _fragflag,
+                    data_bytes: bytes_buffer.try_into()
+                    .unwrap_or_else(|v: Vec<u8>| panic!(
+                        "Error occurred when tyring to convert a vector to an array! The length of the vector is {}, hope this may be useful.",
+                        v.len())),
+                })
+            }
+        }
+
+        pub fn from_bytes(
+            index: i16,
+            fragflag: u8,
+            data: &Vec<u8>,
+        ) -> Result<HammingPacket, String> {
+            if data.len() > super::DATA_BYTES_VALID {
+                Err(String::from("Too many bytes in a packet!"))
+            } else if fragflag != 0 && fragflag != 1 {
+                Err(format!("Invalid fragflag value: {}!", fragflag))
+            } else {
+                // 创建头字节
+                println!("Start creating header bytes.");
                 let _index: i16 = index;
                 let _size: i16 = data.len() as i16;
                 let _fragflag: u8 = fragflag;
@@ -143,25 +189,36 @@ pub mod packet {
                     .append(&mut processor::byte2bits(processor::short2bytes(_size)[0]).to_vec());
                 data_buffer
                     .append(&mut processor::byte2bits(processor::short2bytes(_size)[1]).to_vec());
+                data_buffer.append(&mut processor::byte2bits(_fragflag).to_vec());
                 for byte in data.iter() {
                     data_buffer.append(&mut processor::byte2bits(*byte).to_vec());
                 }
 
-                let fill_up_size = DATA_BYTES_VALID as i16 - _size;
-                while fill_up_size > 0 {
+                // 填补空余空间
+                println!("Start filling up the rest space.");
+                let mut fill_up_size = super::DATA_BYTES_VALID as i16 - _size;
+                while fill_up_size >= 0 {
                     data_buffer.append(
                         &mut [false, false, false, false, false, false, false, false].to_vec(),
                     );
+                    fill_up_size -= 1;
                 }
 
+                println!("the whole vector's size is {}", data_buffer.len());
+
+                // 插入汉明码
+                println!("Start inserting the Hamming code.");
                 data_buffer.insert(0, false);
                 for i in 0..15 {
                     data_buffer.insert((1 << i) as usize, false);
                 }
 
                 let mut flag: i32 = 0;
-                for i in 0..8 * DATA_BYTES {
-                    if data_buffer[i] {
+                for i in 0..(8 * 4096) {
+                    if *data_buffer
+                        .get(i)
+                        .expect("Error when getting element in data buffer.")
+                    {
                         flag ^= i as i32;
                     }
                 }
@@ -186,10 +243,12 @@ pub mod packet {
                 }
 
                 let mut data_bytes: Vec<u8> = Vec::new();
-                for i in 0..DATA_BYTES {
+                for i in 0..super::DATA_BYTES {
                     data_bytes.push(processor::bits2byte(&data_buffer[8 * i..8 * (i + 1)]));
                 }
 
+                // 返还创建的包
+                println!("Return the packet.");
                 Ok(HammingPacket {
                     index: _index,
                     size: _size,
@@ -198,8 +257,57 @@ pub mod packet {
                     .unwrap_or_else(|v: Vec<u8>| panic!(
                         "Error occurred when tyring to convert a vector to an array! The length of the vector is {}, hope this may be useful.",
                         v.len())),
-                })
+                    })
             }
+        }
+    }
+}
+
+pub mod packet_handle {
+    use super::hamming_packet::HammingPacket;
+
+    pub fn handle_single_packet(data: &Vec<u8>) -> HammingPacket {
+        match HammingPacket::from_bytes(0, 0, data) {
+            Ok(pak) => pak,
+            Err(info) => panic!(info),
+        }
+    }
+
+    pub fn restore_single_packet(packet: &mut HammingPacket) -> Vec<u8> {
+        match packet.to_real_bytes() {
+            Ok(val) => val,
+            Err(info) => panic!(info),
+        }
+    }
+
+    pub fn handle_multi_packet(data: &Vec<u8>) -> Vec<HammingPacket> {
+        let count = data.len() / super::DATA_BYTES_VALID + 1;
+        let mut packets: Vec<HammingPacket> = Vec::new();
+        for i in 0..count {
+            let _size = if i == count - 1 {
+                data.len() % super::DATA_BYTES_VALID
+            } else {
+                super::DATA_BYTES_VALID
+            };
+            let mut packet_bytes: Vec<u8> = Vec::new();
+            for j in 0..packet_bytes.len() {
+                packet_bytes.push(data[i * super::DATA_BYTES_VALID + j]);
+            }
+            let index: i16 = i as i16;
+            let fragflag: u8 = if i == count - 1 { 1 } else { 0 };
+            packets[index as usize] =
+                match HammingPacket::from_bytes(index, fragflag, &packet_bytes) {
+                    Ok(val) => val,
+                    Err(info) => panic!(info),
+                }
+        }
+        packets
+    }
+
+    pub fn handle_existed_pak(data: &Vec<u8>) -> HammingPacket {
+        match HammingPacket::from_packed_bytes(data) {
+            Ok(val) => val,
+            Err(info) => panic!(info),
         }
     }
 }
